@@ -30,7 +30,7 @@ fun resolveIncludes(template: File, includeContext: URI = template.parentFile.to
     while (script.any { isIncludeDirective(it) }) {
         script = script.flatMap { line ->
             if (isIncludeDirective(line)) {
-                val include = extractIncludeTarget(line)
+                val (include, trailingLogic) = extractIncludeTarget(line)
 
                 val includeURL = when {
                     isUrl(include) -> URL(include)
@@ -42,12 +42,14 @@ fun resolveIncludes(template: File, includeContext: URI = template.parentFile.to
                 // test if include was processed already (aka include duplication, see #151)
                 if (includes.map { it.path }.contains(includeURL.path)) {
                     // include was already resolved, so we return an emtpy result here to avoid duplication errors
-                    emptyList()
+                    trailingLogic?.let { listOf(it) }.orEmpty()
                 } else {
                     includes.add(includeURL)
 
                     try {
-                        includeURL.readText().lines()
+                        with(includeURL.readText().lines()) {
+                            trailingLogic?.let { this.plus(it) } ?: this
+                        }
                     } catch (e: FileNotFoundException) {
                         errorMsg("Failed to resolve //INCLUDE '${include}'")
                         System.err.println(e.message?.lines()!!.map { it.prependIndent("[kscript] [ERROR] ") })
@@ -70,11 +72,16 @@ private const val INCLUDE_ANNOT_PREFIX = "@file:Include("
 internal fun isIncludeDirective(line: String) = line.startsWith("//INCLUDE") || line.startsWith(INCLUDE_ANNOT_PREFIX)
 
 
-internal fun extractIncludeTarget(incDirective: String) = when {
-    incDirective.startsWith(INCLUDE_ANNOT_PREFIX) -> incDirective
-        .replaceFirst(INCLUDE_ANNOT_PREFIX, "")
-        .split(")")[0].trim(' ', '"')
-    else -> incDirective.split("[ ]+".toRegex()).last()
+internal fun extractIncludeTarget(incDirective: String): Pair<String, String?> {
+    return when {
+        incDirective.startsWith(INCLUDE_ANNOT_PREFIX) -> {
+            with(incDirective.replaceFirst(INCLUDE_ANNOT_PREFIX, "").split(")", ");", limit = 2)) {
+                Pair(this[0].trim(' ', '"'), this[1].takeIf { it.isNotBlank() })
+            }
+        }
+        // Comment directives cannot have trailing logic (as it would still be within a comment)
+        else -> Pair(incDirective.split("[ ]+".toRegex()).last(), null)
+    }
 }
 
 
